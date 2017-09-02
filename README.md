@@ -1,3 +1,9 @@
+
+# pocketTETRIS Attiny167
+This version is for Digistump Digispark Pro clones with Attiny167.
+
+The following is the original documentation for the Attiny85 version with custom PCB.
+
 # pockeTETRIS
 This project originally was meant as a fathers day gift for my tetris-loving father, and I felt like it should be available for others if they want to make a pretty small tetris clone. This was the smallest I could make it with a big enough battery and a thick durable 3d printed housing.
 
