@@ -1,4 +1,11 @@
-/* 2015 / 2016 /2017
+/* 2015 / 2016 / 2017
+
+    Curtis Campbell
+    * modified to use TinyPinChange library for buttons
+    * put bitmaps in separate header
+    * put oled function in separate header
+    * tested with Digispark Pro with Attiny167
+
 
     Dominick Anatala
     modified for 3 buttons, removed wrapping around edges since we now have 3 buttons
@@ -10,10 +17,10 @@
    When the game is running :
    ==========================
    
-   Tap LEFT BUTTON - Moves the piece to the left (and wraps around at the left edge)
-   Hold LEFT BUTTON - Move the piece to the right
-   Tap RIGHT BUTTON - Rotates the piece
-   Hold RIGHT BUTTON - Place the piece
+   Tap LEFT BUTTON - Moves the piece to the left
+   Tap RIGHT BUTTON - Move the piece to the right
+   Tap MIDDLE BUTTON - Rotates the piece
+   Hold MIDDLE BUTTON - Place the piece
 
    Before the game starts:
    =======================
@@ -52,14 +59,17 @@
    http://www.re-innovation.co.uk/web12/index.php/en/blog-75/306-sleep-modes-on-attiny85
 */
 
-// The custom font file is the only additional file you should need to compile this game
-#include "font8x8AJ.h"
+#include "oled.h"
+#include "bitmaps.h"
 
 // Standard Arduino headers
-#include <EEPROM.h>
 #include <avr/pgmspace.h>
 #include <avr/sleep.h>
 #include <avr/interrupt.h> // needed for the additional interrupt
+#include "EEPROM.h"
+
+// digispark libraries
+#include <TinyPinChange.h>
 
 // Mode settings for functions with multiple purposes
 #define NORMAL 0
@@ -87,114 +97,24 @@
 // The number of milliseconds before each drop (baseline)
 #define DROPDELAY 600
 
-#define DIGITAL_WRITE_HIGH(PORT) PORTB |= (1 << PORT)
-#define DIGITAL_WRITE_LOW(PORT) PORTB &= ~(1 << PORT)
-
 // Routines to set and clear bits (used in the sleep code)
 #define cbi(sfr, bit) (_SFR_BYTE(sfr) &= ~_BV(bit))
 #define sbi(sfr, bit) (_SFR_BYTE(sfr) |= _BV(bit))
 
-// Defines for OLED output
-#define SSD1306XLED_H
-#define SSD1306_SCL   PORTB4  // SCL, Pin 4 on SSD1306 Board - for webbogles board
-#define SSD1306_SDA   PORTB3  // SDA, Pin 3 on SSD1306 Board - for webbogles board
-#define SSD1306_SA    0x78  // Slave address
+#define LEFT_P    5
+#define MIDDLE_P  4
+#define RIGHT_P   3
 
-// The bitmaps for the little images of next block
-static const byte miniBlock[][4] PROGMEM = {
-  {0x77, 0x77, 0x00, 0x00},
-  {0x70, 0x77, 0x70, 0x00},
-  {0x70, 0x00, 0x70, 0x77},
-  {0x70, 0x07, 0x70, 0x07},
-  {0x70, 0x07, 0x00, 0xEE},
-  {0x70, 0x77, 0x00, 0x0E},
-  {0x70, 0x07, 0xEE, 0x00}
-};
-
-// The bitmaps for the main blocks
-static const int blocks[7] PROGMEM = {
-  0x4444, 0x44C0,
-  0x4460, 0x0660,
-  0x06C0, 0x0E40,
-  0x0C60
-};
-
-// The bitmaps for blocks on the screen
-static const byte  blockout[16] PROGMEM = {
-  0xF8, 0x00, 0x3E, 0x80,
-  0x0F, 0xE0, 0x03, 0xF8,
-  0x3E, 0x80, 0x0F, 0xE0,
-  0x03, 0xF8, 0x3E, 0x00
-};
-
-// The bitmaps for ghost blocks on the screen
-static const byte  ghostout[16] PROGMEM = {
-  0x88, 0x00, 0x22, 0x80,
-  0x08, 0x20, 0x02, 0x88,
-  0x22, 0x80, 0x08, 0x20,
-  0x02, 0x88, 0x22, 0x00
-};
+uint8_t VirtualPortLeft;
+uint8_t VirtualPortMiddle;
+uint8_t VirtualPortRight;
 
 // Decode lookup to translate block positions to the 8 columns on the screen
 static const byte startDecode[11] PROGMEM = {0, 1, 1, 2, 3, 4, 4, 5, 6, 7, 8};
 static const byte endDecode[11] PROGMEM =   {1, 2, 3, 3, 4, 5, 6, 6, 7, 8, 8};
 
-// The  logo on the opening screen - adapted from the original by Tobozo https://github.com/tobozo
-
-const byte brickLogo[] PROGMEM = {
-  0x01, 0x01, 0x01, 0x01, 0x81, 0x81, 0xC1, 0xE1,
-  0xF1, 0xF1, 0x01, 0x11, 0xF1, 0xF1, 0xE1, 0xC1,
-  0xC1, 0x81, 0x81, 0x01, 0x01, 0x01, 0x01, 0x01,
-  0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
-  0x01, 0x01, 0x01, 0x01, 0xFC, 0xFC, 0xFE, 0xFF,
-  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00,
-  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-  0xFF, 0xFE, 0xF8, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0xFF, 0xFF, 0x7F, 0x3F, 0xBF, 0x9F, 0xCF, 0xEF,
-  0xE7, 0xF7, 0xFB, 0xE0, 0x01, 0xFB, 0xF3, 0xF7,
-  0xE7, 0xEF, 0xCF, 0xDF, 0xDF, 0xBF, 0xBF, 0x30,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0xFE, 0xFF, 0xFF,
-  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-  0x00, 0x3F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-  0xFF, 0xFF, 0xFF, 0xFF, 0xE0, 0x06, 0xFE, 0xFC,
-  0xFC, 0xFC, 0xF8, 0xF8, 0xF0, 0xF0, 0xE0, 0x00,
-  0x00, 0xFF, 0xFF, 0x7F, 0x7F, 0x3F, 0xBF, 0x9F,
-  0xDF, 0xCF, 0xEF, 0xEF, 0xE4, 0x00, 0xF7, 0xE7,
-  0xEF, 0xEF, 0xCF, 0xDF, 0xDF, 0x9F, 0xBF, 0xBF,
-  0x3F, 0x00, 0x07, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF,
-  0xFF, 0xFF, 0xFF, 0xF0, 0x00, 0xFC, 0xFE, 0xFE,
-  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-  0xFF, 0x80, 0x07, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xC0, 0x0E,
-  0x3E, 0x1E, 0x1C, 0x1D, 0x0D, 0x09, 0x03, 0x03,
-  0x00, 0x07, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-  0xFF, 0xFF, 0xFF, 0x7F, 0x7F, 0x3F, 0x00, 0x3F,
-  0x3F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0xFF, 0xFF,
-  0xFF, 0xFF, 0xFF, 0x80, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x80, 0x80, 0x83, 0x83,
-  0x83, 0x89, 0x8D, 0x8D, 0x8C, 0x8E, 0x8E, 0x8E,
-  0x8F, 0x8F, 0x9F, 0x8F, 0x8F, 0x8F, 0x8F, 0x87,
-  0x86, 0x86, 0x82, 0x82, 0x82, 0x80, 0x80, 0x80,
-  0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80
-};
-
-
 // Function prototypes - generic ones I use in all games
 void doNumber (int x, int y, int value);
-
-// Function prototypes - screen control modified from https://bitbucket.org/tinusaur/ssd1306xled
-void ssd1306_init(void);
-void ssd1306_xfer_start(void);
-void ssd1306_xfer_stop(void);
-void ssd1306_send_byte(uint8_t byte);
-void ssd1306_send_command(uint8_t command);
-void ssd1306_send_data_start(void);
-void ssd1306_send_data_stop(void);
-void ssd1306_setpos(uint8_t x, uint8_t y);
-void ssd1306_fillscreen(uint8_t fill_Data);
-void ssd1306_char_f8x8(uint8_t x, uint8_t y, const char ch[]);
 
 // Function prototypes - tetris-specific
 void playTetris(void);
@@ -235,7 +155,7 @@ pieceSpace ghostPiece = {0};    // Current ghost piece
 unsigned long moveTime = 0;     // Baseline time for current move
 unsigned long keyTime = 0;      // Baseline time for current keypress
 
-byte keyLock = 0;               // Holds the mode of the last keypress (for debounce and stuff)
+volatile byte keyLock = 0;               // Holds the mode of the last keypress (for debounce and stuff)
 
 byte nextBlockBuffer[8][2];     // The little image of the next block
 byte nextPiece = 0;             // The identity of the next piece
@@ -258,166 +178,32 @@ void doNumber (int x, int y, int value) {
   ssd1306_char_f8x8(x, y, temp);
 }
 
-
-void ssd1306_char_f8x8(uint8_t x, uint8_t y, const char ch[]) {
-  uint8_t c, i, j = 0;
-
-  while (ch[j] != '\0')
-  {
-    c = ch[j] - 32; // to space
-    if (c > 0) c = c - 12; // to dash
-    if (c > 15) c = c - 7;
-    if (c > 40) c = c - 6;
-
-    ssd1306_setpos(y, x);
-    ssd1306_send_data_start();
-    for (byte lxn = 0; lxn < 8; lxn++) {
-      ssd1306_send_byte(pgm_read_byte(&font[c][7 - lxn]));
-    }
-    ssd1306_send_data_stop();
-    x += 1;
-    j++;
-  }
-}
-
 // Interrupt handlers - to make sure every button press is caught promptly!
-ISR(PCINT0_vect) { // PB0 pin button interrupt
-  if (keyLock == 0) {
-    keyLock = 1;
-    keyTime = millis();
-  }
-  if (digitalRead(1) == HIGH){
-    keyLock = 3;
-  }
-}
-
-void playerIncTetris() { // PB2 pin button interrupt
-  if (keyLock == 0) {
-    keyLock = 2;
-    keyTime = millis();
-  }
-}
-
-//added for 3rd button
-void playerIncTetris1() { // PB1 pin button interrupt
-  if (keyLock == 0) {
-    keyLock = 3;
-    keyTime = millis();
-  }
-}
-
-// Screen control functions
-void ssd1306_init(void) {
-  DDRB |= (1 << SSD1306_SDA); // Set port as output
-  DDRB |= (1 << SSD1306_SCL); // Set port as output
-
-  ssd1306_send_command(0xAE); // display off
-  ssd1306_send_command(0x00); // Set Memory Addressing Mode
-  ssd1306_send_command(0x10); // 00,Horizontal Addressing Mode;01,VERTDRAWical Addressing Mode;10,Page Addressing Mode (RESET);11,Invalid
-  ssd1306_send_command(0x40); // Set Page Start Address for Page Addressing Mode,0-7
-  ssd1306_send_command(0x81); // Set COM Output Scan Direction
-  ssd1306_send_command(0xCF); // ---set low column address
-  ssd1306_send_command(0xA1); // ---set high column address
-  ssd1306_send_command(0xC8); // --set start line address
-  ssd1306_send_command(0xA6); // --set contrast control register
-  ssd1306_send_command(0xA8);
-  ssd1306_send_command(0x3F); // --set segment re-map 0 to 127
-  ssd1306_send_command(0xD3); // --set normal display
-  ssd1306_send_command(0x00); // --set multiplex ratio(1 to 64)
-  ssd1306_send_command(0xD5); //
-  ssd1306_send_command(0x80); // 0xa4,Output follows RAM content;0xa5,Output ignores RAM content
-  ssd1306_send_command(0xD9); // -set display offset
-  ssd1306_send_command(0xF1); // -not offset
-  ssd1306_send_command(0xDA); // --set display clock divide ratio/oscillator frequency
-  ssd1306_send_command(0x12); // --set divide ratio
-  ssd1306_send_command(0xDB); // --set pre-charge period
-  ssd1306_send_command(0x40); //
-  ssd1306_send_command(0x20); // --set com pins hardware configuration
-  ssd1306_send_command(0x02);
-  ssd1306_send_command(0x8D); // --set vcomh
-  ssd1306_send_command(0x14); // 0x20,0.77xVcc
-  ssd1306_send_command(0xA4); // --set DC-DC enable
-  ssd1306_send_command(0xA6); //
-  ssd1306_send_command(0xAF); // --turn on oled panel
-}
-
-void ssd1306_xfer_start(void) {
-  DIGITAL_WRITE_HIGH(SSD1306_SCL);  // Set to HIGH
-  DIGITAL_WRITE_HIGH(SSD1306_SDA);  // Set to HIGH
-  DIGITAL_WRITE_LOW(SSD1306_SDA);   // Set to LOW
-  DIGITAL_WRITE_LOW(SSD1306_SCL);   // Set to LOW
-}
-
-void ssd1306_xfer_stop(void) {
-  DIGITAL_WRITE_LOW(SSD1306_SCL);   // Set to LOW
-  DIGITAL_WRITE_LOW(SSD1306_SDA);   // Set to LOW
-  DIGITAL_WRITE_HIGH(SSD1306_SCL);  // Set to HIGH
-  DIGITAL_WRITE_HIGH(SSD1306_SDA);  // Set to HIGH
-}
-
-void ssd1306_send_byte(uint8_t byte) {
-  uint8_t i;
-  for (i = 0; i < 8; i++)
-  {
-    if ((byte << i) & 0x80)
-      DIGITAL_WRITE_HIGH(SSD1306_SDA);
-    else
-      DIGITAL_WRITE_LOW(SSD1306_SDA);
-
-    DIGITAL_WRITE_HIGH(SSD1306_SCL);
-    DIGITAL_WRITE_LOW(SSD1306_SCL);
-  }
-  DIGITAL_WRITE_HIGH(SSD1306_SDA);
-  DIGITAL_WRITE_HIGH(SSD1306_SCL);
-  DIGITAL_WRITE_LOW(SSD1306_SCL);
-}
-
-void ssd1306_send_command(uint8_t command) {
-  ssd1306_xfer_start();
-  ssd1306_send_byte(SSD1306_SA);  // Slave address, SA0=0
-  ssd1306_send_byte(0x00);  // write command
-  ssd1306_send_byte(command);
-  ssd1306_xfer_stop();
-}
-
-void ssd1306_send_data_start(void) {
-  ssd1306_xfer_start();
-  ssd1306_send_byte(SSD1306_SA);
-  ssd1306_send_byte(0x40);  //write data
-}
-
-void ssd1306_send_data_stop(void) {
-  ssd1306_xfer_stop();
-}
-
-void ssd1306_setpos(uint8_t x, uint8_t y)
+/* Function called in interruption in case of change on pins */
+void InterruptFunctionToCall(void)
 {
-  if (y > 7) return;
-  ssd1306_xfer_start();
-  ssd1306_send_byte(SSD1306_SA);  //Slave address,SA0=0
-  ssd1306_send_byte(0x00);  //write command
-
-  ssd1306_send_byte(0xb0 + y);
-  ssd1306_send_byte(((x & 0xf0) >> 4) | 0x10); // |0x10
-  ssd1306_send_byte((x & 0x0f) | 0x01); // |0x01
-
-  ssd1306_xfer_stop();
-}
-
-void ssd1306_fillscreen(uint8_t fill_Data) {
-  uint8_t m, n;
-  for (m = 0; m < 8; m++)
-  {
-    ssd1306_send_command(0xb0 + m); //page0-page1
-    ssd1306_send_command(0x00);   //low column start address
-    ssd1306_send_command(0x10);   //high column start address
-    ssd1306_send_data_start();
-    for (n = 0; n < 128; n++)
+    if (keyLock == 0)
     {
-      ssd1306_send_byte(fill_Data);
+        //if(TinyPinChange_Edge(VirtualPortLeft, LEFT_P))
+        if (digitalRead(LEFT_P) == LOW)
+        {
+            keyLock = 3;
+        }
+        
+        //else if(TinyPinChange_Edge(VirtualPortMiddle, MIDDLE_P))
+        else if (digitalRead(MIDDLE_P) == LOW)
+        {
+            keyLock = 2;
+        }
+        
+        //else if(TinyPinChange_Edge(VirtualPortRight, RIGHT_P))
+        else if (digitalRead(RIGHT_P) == LOW)
+        {
+            keyLock = 1;
+        }
+        
+        keyTime = millis();
     }
-    ssd1306_send_data_stop();
-  }
 }
 
 // Sleep code from http://www.re-innovation.co.uk/web12/index.php/en/blog-75/306-sleep-modes-on-attiny85
@@ -435,25 +221,36 @@ void system_sleep() {
 
 // Arduino stuff
 void setup() {
-  DDRB = 0b00000000;    // set PB1 as output (for the speaker)
-  PCMSK = 0b00000011;   // pin change mask: listen to portb bit 1
-  GIMSK |= 0b00100000;  // enable PCINT interrupt
-  sei();                // enable all interrupts
-  ssd1306_init();       // initialise the screen
   keyLock = 0;
+
+  pinMode(LEFT_P, INPUT_PULLUP);
+  pinMode(MIDDLE_P, INPUT_PULLUP);
+  pinMode(RIGHT_P, INPUT_PULLUP);
+  
+  TinyPinChange_Init();
+
+  VirtualPortLeft  = TinyPinChange_RegisterIsr(LEFT_P,  InterruptFunctionToCall);
+  VirtualPortMiddle = TinyPinChange_RegisterIsr(MIDDLE_P, InterruptFunctionToCall);
+  VirtualPortRight = TinyPinChange_RegisterIsr(RIGHT_P, InterruptFunctionToCall);
+
+  /* Enable Pin Change for each pin */
+  TinyPinChange_EnablePin(LEFT_P);
+  TinyPinChange_EnablePin(MIDDLE_P);
+  TinyPinChange_EnablePin(RIGHT_P);
+  
+  ssd1306_init();       // initialise the screen
 }
 
 void loop() {
   ssd1306_init();
   ssd1306_fillscreen(0x00);
 
-  ssd1306_char_f8x8(1, 64, "TETRIS");
   /* The lowercase character set is seriously compromised and hacked about to remove unused letters in order to save code space
      .. hence all lowercase words look like nonsense! See font8x8AJ.h for details on the mapping.
   */
-  
+  ssd1306_char_f8x8(1, 64, "TETRIS");
   ssd1306_char_f8x8(1, 48, " FOR");
-  ssd1306_char_f8x8(1, 40, "DADDIO");
+  ssd1306_char_f8x8(1, 40, "AUBREY");
 
   drawScreenBorder();
 
@@ -469,11 +266,11 @@ void loop() {
   long startT = millis();
   long nowT = 0;
   boolean sChange = 0;
-  while (digitalRead(0) == HIGH) {
+  while (digitalRead(LEFT_P) == LOW) {
     nowT = millis();
     if (nowT - startT > 2000) {
       sChange = 1;
-      if (digitalRead(2) == HIGH) {
+      if (digitalRead(MIDDLE_P) == LOW) {
         ssd1306_char_f8x8(2, 8, "MODE");
         if (challengeMode == 0) {
           challengeMode = 1;
@@ -496,13 +293,13 @@ void loop() {
     }
     if (sChange == 1) break;
   }
-  while (digitalRead(0) == HIGH);
+  while (digitalRead(LEFT_P) == LOW);
 
   if (sChange == 0) {
     delay(1600);
 
     ssd1306_char_f8x8(1, 20, "LOVE");
-    ssd1306_char_f8x8(1, 10, "DOM");
+    ssd1306_char_f8x8(1, 10, "PAPA");
     delay(1500);
     ssd1306_fillscreen(0x00);
     playTetris();
@@ -642,43 +439,6 @@ bool movePieceDown(void) {
   if (createGhost()) drawGhost(DRAW);
 }
 
-/* remove wrapping around edges
-  void movePieceLeft(void) {
-  byte response;
-
-  oldPiece = currentPiece;
-  currentPiece.column = currentPiece.column - 1;
-
-  response = checkCollision();
-
-  if (response == 1) {
-    currentPiece = oldPiece; // back to where it was
-  } else if (response == 2) {
-    int wide = 0;
-    for (byte i = 0; i < 4; i++) {
-      if (currentPiece.blocks[3][i]) wide = 1;
-    }
-    boolean narrow = true;
-    for (byte i = 0; i < 4; i++) {
-      if (currentPiece.blocks[2][i]) narrow = false;
-    }
-    if (narrow) wide = -1;
-    currentPiece.column = 7 - wide;
-    response = checkCollision(); // Check again - does wrapping around cause a collision?
-    if (response == 1) {
-      currentPiece = oldPiece; // back to where it was
-    } else {
-      drawGhost(ERASE);
-      if (createGhost()) drawGhost(DRAW);
-      drawGameScreen(0, 10, 0, VERTDRAW, FULL);
-    }
-  } else {
-    drawGhost(ERASE);
-    if (createGhost()) drawGhost(DRAW);
-  }
-  }
-*/
-
 void movePieceLeft(void) {
   oldPiece = currentPiece;
   currentPiece.column = currentPiece.column - 1;
@@ -729,8 +489,8 @@ byte checkCollision(void) {
 
 void handleInput(void) {
   //middle button
-  if (digitalRead(2) == HIGH && keyLock == 2 && millis() - keyTime > 300) {
-    while (digitalRead(2) == HIGH) {
+  if (digitalRead(MIDDLE_P) == LOW && keyLock == 2 && millis() - keyTime > 300) {
+    while (digitalRead(MIDDLE_P) == LOW) {
       drawPiece(ERASE);
       movePieceDown();
       drawPiece(DRAW);
@@ -742,7 +502,7 @@ void handleInput(void) {
   }
 
   //left button
-  if (digitalRead(0) == HIGH && (keyLock == 1 || keyLock == 4) && millis() - keyTime > 200) {
+  if (digitalRead(LEFT_P) == LOW && (keyLock == 1 || keyLock == 4) && millis() - keyTime > 200) {
     drawPiece(ERASE);
     movePieceRight();
     drawPiece(DRAW);
@@ -752,7 +512,7 @@ void handleInput(void) {
   }
 
   //add 3rd button - right button
-  if (digitalRead(1) == HIGH && (keyLock == 3 || keyLock == 5) && millis() - keyTime > 200) {
+  if (digitalRead(RIGHT_P) == LOW && (keyLock == 3 || keyLock == 5) && millis() - keyTime > 200) {
     drawPiece(ERASE);
     movePieceLeft();
     drawPiece(DRAW);
@@ -762,7 +522,7 @@ void handleInput(void) {
   }
 
   //checks if button is simply pressed once and not held down
-  if (digitalRead(0) == LOW && digitalRead(1) == LOW && digitalRead(2) == LOW) {
+  if (digitalRead(LEFT_P) == HIGH && digitalRead(RIGHT_P) == HIGH && digitalRead(MIDDLE_P) == HIGH) {
     if (keyLock == 2  && millis() - keyTime < 300) {
       drawPiece(ERASE);
       rotatePiece();
@@ -992,8 +752,8 @@ void playTetris(void) {
   fillGrid(0, GHOST);
 
   // Attach the interrupt to read key 2
-  attachInterrupt(0, playerIncTetris, RISING);
-  attachInterrupt(1, playerIncTetris1, RISING);//3rd button
+  //attachInterrupt(MIDDLE_I, playerIncTetrisMIDDLE, RISING);
+  //attachInterrupt(LEFT_I, playerIncTetrisLEFT, RISING);//3rd button
 
   loadPiece(random(1, 8), STARTY, STARTX);
   drawPiece(DRAW);
@@ -1062,3 +822,4 @@ void playTetris(void) {
     delay(200);
   }
 }
+
