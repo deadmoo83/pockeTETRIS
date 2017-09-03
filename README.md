@@ -1,5 +1,5 @@
 
-# pocketTETRIS Attiny167
+# pockeTETRIS Attiny167
 This version is for Digistump Digispark Pro clones with Attiny167.
 
 The following is the original documentation for the Attiny85 version with custom PCB.
